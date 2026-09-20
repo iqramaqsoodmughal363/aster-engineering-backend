@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const jwt = require('jsonwebtoken');
 const { isAdminEmail } = require('./config/adminEmails');
 require('dotenv').config();
 
@@ -50,6 +51,22 @@ const userSchema = new mongoose.Schema({
 });
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 
+const authenticateUser = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization || '';
+    if (!header.startsWith('Bearer ')) {
+      return res.status(401).json({ message: 'Please sign in to continue.' });
+    }
+    const decoded = jwt.verify(header.slice(7), process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('-password');
+    if (!user) return res.status(401).json({ message: 'User account not found.' });
+    req.user = user;
+    next();
+  } catch (error) {
+    return res.status(401).json({ message: 'Your session has expired. Please sign in again.' });
+  }
+};
+
 app.post('/api/register', async (req, res) => {
   try {
     await connectDB();
@@ -93,10 +110,117 @@ app.post('/api/login', async (req, res) => {
 
     res.status(200).json({ 
       message: 'Login successful!', 
-      user: { id: user._id, name: user.name, email: user.email, role } 
+      user: { id: user._id, name: user.name, email: user.email, role },
+      token: jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' })
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error: ' + error.message });
+  }
+});
+
+const cartSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', unique: true, required: true },
+  items: [{
+    productId: { type: String, required: true },
+    title: { type: String, required: true },
+    thumbnail: String,
+    category: String,
+    quantity: { type: Number, default: 1, min: 1 },
+  }],
+}, { timestamps: true });
+const Cart = mongoose.models.Cart || mongoose.model('Cart', cartSchema);
+
+const orderSchema = new mongoose.Schema({
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  items: [{
+    productId: String,
+    title: String,
+    thumbnail: String,
+    quantity: Number,
+  }],
+  customer: {
+    name: { type: String, required: true },
+    phone: { type: String, required: true },
+    address: { type: String, required: true },
+  },
+  status: { type: String, enum: ['Pending', 'Confirmed', 'In Progress', 'Completed'], default: 'Pending' },
+}, { timestamps: true });
+const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
+
+app.get('/api/cart', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    const cart = await Cart.findOne({ user: req.user._id });
+    res.json(cart || { items: [] });
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load your cart.' });
+  }
+});
+
+app.post('/api/cart/items', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    const { productId, title, thumbnail, category } = req.body;
+    if (!productId || !title) return res.status(400).json({ message: 'Product information is required.' });
+    let cart = await Cart.findOne({ user: req.user._id });
+    if (!cart) cart = new Cart({ user: req.user._id, items: [] });
+    const existing = cart.items.find((item) => item.productId === String(productId));
+    if (existing) existing.quantity += 1;
+    else cart.items.push({ productId: String(productId), title, thumbnail, category, quantity: 1 });
+    await cart.save();
+    res.status(201).json(cart);
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to add this item to your cart.' });
+  }
+});
+
+app.patch('/api/cart/items/:productId', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    const quantity = Number(req.body.quantity);
+    const cart = await Cart.findOne({ user: req.user._id });
+    if (!cart) return res.status(404).json({ message: 'Cart not found.' });
+    const item = cart.items.find((entry) => entry.productId === req.params.productId);
+    if (!item) return res.status(404).json({ message: 'Cart item not found.' });
+    if (!Number.isInteger(quantity) || quantity < 1) cart.items = cart.items.filter((entry) => entry.productId !== req.params.productId);
+    else item.quantity = quantity;
+    await cart.save();
+    res.json(cart);
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to update your cart.' });
+  }
+});
+
+app.post('/api/orders', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    const { items, customer } = req.body;
+    if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ message: 'Your cart is empty.' });
+    if (!customer?.name || !customer?.phone || !customer?.address) return res.status(400).json({ message: 'Please complete your delivery details.' });
+    const order = await Order.create({ user: req.user._id, items, customer });
+    await Cart.findOneAndUpdate({ user: req.user._id }, { items: [] });
+    res.status(201).json({ message: 'Order placed successfully.', order });
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to place your order.' });
+  }
+});
+
+app.get('/api/orders/my', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    res.json(await Order.find({ user: req.user._id }).sort({ createdAt: -1 }));
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load your orders.' });
+  }
+});
+
+app.get('/api/orders', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    if (!isAdminEmail(req.user.email) && req.user.role !== 'admin') return res.status(403).json({ message: 'Admin access is required.' });
+    res.json(await Order.find().populate('user', 'name email').sort({ createdAt: -1 }));
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load orders.' });
   }
 });
 

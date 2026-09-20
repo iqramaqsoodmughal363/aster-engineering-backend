@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
@@ -8,67 +10,241 @@ const app = express();
 // Body Parser Middleware
 app.use(express.json());
 
-// Enable CORS for Frontend (port 3000 & 3001)
+// Root route for API status check
+app.get('/', (req, res) => {
+  res.status(200).json({ message: 'Master Engineering API is running successfully!' });
+});
+
+// Clean & Robust CORS Configuration for Vercel Serverless
 app.use(cors({
-  origin: '*', // Local testing ke liye har jagah se allow karega
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected Successfully!'))
-  .catch((err) => console.error('❌ MongoDB Connection Error:', err));
+// MongoDB Connection with Serverless Caching
+let isConnected = false;
+const connectDB = async () => {
+  if (isConnected) return;
+  try {
+    const db = await mongoose.connect(process.env.MONGO_URI);
+    isConnected = db.connections[0].readyState;
+    console.log('✅ MongoDB Connected Successfully!');
+  } catch (err) {
+    console.error('❌ MongoDB Connection Error:', err);
+  }
+};
+connectDB();
 
-// User Schema
+// Multiple Admin Emails List
+const ADMIN_EMAILS = [
+  'iqra03010511199@gmail.com', 
+  'masterengineeringworks@gmail.com'
+];
+
+// 1. User Schema & Routes
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  role: { type: String, default: 'user' },
+  resetPasswordToken: { type: String },
+  resetPasswordExpire: { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
+const User = mongoose.models.User || mongoose.model('User', userSchema);
 
-const User = mongoose.model('User', userSchema);
-
-// 1. Register Route
 app.post('/api/register', async (req, res) => {
   try {
+    await connectDB();
     const { name, email, password } = req.body;
-
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'Sabhi fields zaroori hain!' });
     }
-
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: 'Yeh email pehle se registered hai!' });
     }
+    
+    // Assign admin role if email matches list
+    const role = ADMIN_EMAILS.includes(email.toLowerCase().trim()) ? 'admin' : 'user';
 
-    const newUser = new User({ name, email, password });
+    const newUser = new User({ 
+      name, 
+      email, 
+      password, 
+      role 
+    });
     await newUser.save();
-
-    console.log('🎉 New User Registered:', newUser.email);
     res.status(201).json({ message: 'Account successfully ban gaya!' });
   } catch (error) {
-    console.error('Registration Error:', error);
     res.status(500).json({ message: 'Server error: ' + error.message });
   }
 });
 
-// 2. Login Route
 app.post('/api/login', async (req, res) => {
   try {
+    await connectDB();
     const { email, password } = req.body;
     const user = await User.findOne({ email, password });
-
     if (!user) {
-      return res.status(400).json({ message: 'Ghalat Email ya Password!' });
+      return res.status(400).json({ message: 'Invalid email or password.' });
     }
+    
+    // Force admin role for authorized emails
+    const role = ADMIN_EMAILS.includes(email.toLowerCase().trim()) ? 'admin' : (user.role || 'user');
 
     res.status(200).json({ 
       message: 'Login successful!', 
-      user: { id: user._id, name: user.name, email: user.email } 
+      user: { id: user._id, name: user.name, email: user.email, role } 
     });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error: ' + error.message });
+  }
+});
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    await connectDB();
+    const email = (req.body.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ message: 'Please provide an email address.' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ message: 'No account was found for this email address.' });
+    }
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+      return res.status(500).json({ message: 'Password reset email is not configured.' });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+    user.resetPasswordExpire = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+
+    const frontendUrl = process.env.FRONTEND_URL || 'https://master-engineering-frontend.vercel.app';
+    const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
+    });
+
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: user.email,
+      subject: 'Password Reset - Master Engineering',
+      text: `Reset your password using this link. It expires in 10 minutes: ${resetUrl}`
+    });
+
+    res.status(200).json({ message: 'Password reset link sent to your email.' });
+  } catch (error) {
+    console.error('Forgot Password Error:', error);
+    res.status(500).json({ message: 'Unable to send the password reset email.' });
+  }
+});
+
+app.put('/api/auth/reset-password/:token', async (req, res) => {
+  try {
+    await connectDB();
+    const { password } = req.body;
+    if (!password || password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters long.' });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(req.params.token).digest('hex');
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpire: { $gt: new Date() }
+    });
+    if (!user) {
+      return res.status(400).json({ message: 'This password reset link is invalid or has expired.' });
+    }
+
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+    res.status(200).json({ message: 'Password reset successful. You can now sign in.' });
+  } catch (error) {
+    console.error('Reset Password Error:', error);
+    res.status(500).json({ message: 'Unable to reset the password.' });
+  }
+});
+
+// 2. Gallery / Projects Schema & Routes (Unified)
+const gallerySchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  imageUrl: { type: String, required: true },
+  description: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+const Gallery = mongoose.models.Gallery || mongoose.model('Gallery', gallerySchema);
+
+// Handle POST to /api/projects or /api/gallery
+const handleAddGalleryItem = async (req, res) => {
+  try {
+    await connectDB();
+    const { title, imageUrl, description } = req.body;
+    if (!title || !imageUrl) {
+      return res.status(400).json({ message: 'Title and Image URL are required!' });
+    }
+    const newItem = new Gallery({ title, imageUrl, description });
+    await newItem.save();
+    res.status(201).json({ message: 'Item added to gallery successfully!', newItem });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error: ' + error.message });
+  }
+};
+
+app.post('/api/projects', handleAddGalleryItem);
+app.post('/api/gallery', handleAddGalleryItem);
+
+// Handle GET to /api/projects and /api/gallery
+const handleGetGalleryItems = async (req, res) => {
+  try {
+    await connectDB();
+    const items = await Gallery.find().sort({ createdAt: -1 });
+    res.status(200).json(items);
+  } catch (error) {
+    res.status(500).json({ message: 'Server error: ' + error.message });
+  }
+};
+
+app.get('/api/projects', handleGetGalleryItems);
+app.get('/api/gallery', handleGetGalleryItems);
+
+// 3. Services Schema & Routes
+const serviceSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  icon: { type: String },
+  description: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+const Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
+
+app.post('/api/services', async (req, res) => {
+  try {
+    await connectDB();
+    const { title, icon, description } = req.body;
+    if (!title || !description) {
+      return res.status(400).json({ message: 'Title and description are required!' });
+    }
+    const newService = new Service({ title, icon, description });
+    await newService.save();
+    res.status(201).json({ message: 'Service added successfully!', newService });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error: ' + error.message });
+  }
+});
+
+app.get('/api/services', async (req, res) => {
+  try {
+    await connectDB();
+    const services = await Service.find().sort({ createdAt: -1 });
+    res.status(200).json(services);
   } catch (error) {
     res.status(500).json({ message: 'Server error: ' + error.message });
   }

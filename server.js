@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
+const { isAdminEmail } = require('./config/adminEmails');
 require('dotenv').config();
 
 const app = express();
@@ -37,12 +38,6 @@ const connectDB = async () => {
 };
 connectDB();
 
-// Multiple Admin Emails List
-const ADMIN_EMAILS = [
-  'iqra03010511199@gmail.com', 
-  'masterengineeringworks@gmail.com'
-];
-
 // 1. User Schema & Routes
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -68,11 +63,12 @@ app.post('/api/register', async (req, res) => {
     }
     
     // Assign admin role if email matches list
-    const role = ADMIN_EMAILS.includes(email.toLowerCase().trim()) ? 'admin' : 'user';
+    const normalizedEmail = email.trim().toLowerCase();
+    const role = isAdminEmail(normalizedEmail) ? 'admin' : 'user';
 
     const newUser = new User({ 
       name, 
-      email, 
+      email: normalizedEmail,
       password, 
       role 
     });
@@ -93,7 +89,7 @@ app.post('/api/login', async (req, res) => {
     }
     
     // Force admin role for authorized emails
-    const role = ADMIN_EMAILS.includes(email.toLowerCase().trim()) ? 'admin' : (user.role || 'user');
+    const role = isAdminEmail(user.email) ? 'admin' : (user.role || 'user');
 
     res.status(200).json({ 
       message: 'Login successful!', 

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
+const { isAdminEmail } = require('../config/adminEmails');
 
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
@@ -47,13 +48,20 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    const user = await User.create({ name, email, password, phone });
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await User.create({
+      name,
+      email: normalizedEmail,
+      password,
+      phone,
+      role: isAdminEmail(normalizedEmail) ? 'admin' : 'user',
+    });
 
     res.status(201).json({
       _id: user._id,
       name: user.name,
       email: user.email,
-      role: user.role,
+      role: isAdminEmail(user.email) ? 'admin' : user.role,
       token: generateToken(user._id),
     });
   } catch (error) {
@@ -85,7 +93,7 @@ router.post('/login', async (req, res) => {
       _id: user._id,
       name: user.name,
       email: user.email,
-      role: user.role,
+      role: isAdminEmail(user.email) ? 'admin' : user.role,
       token: generateToken(user._id),
     });
   } catch (error) {

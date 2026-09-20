@@ -17,6 +17,10 @@ app.get('/', (req, res) => {
   res.status(200).json({ message: 'Master Engineering API is running successfully!' });
 });
 
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'master-engineering-api' });
+});
+
 // Clean & Robust CORS Configuration for Vercel Serverless
 app.use(cors({
   origin: '*',

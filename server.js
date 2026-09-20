@@ -231,6 +231,18 @@ app.get('/api/orders', authenticateUser, async (req, res) => {
   }
 });
 
+app.get('/api/admin/carts', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    if (!isAdminEmail(req.user.email) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Admin access is required.' });
+    }
+    res.json(await Cart.find({ 'items.0': { $exists: true } }).populate('user', 'name email').sort({ updatedAt: -1 }));
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to load customer carts.' });
+  }
+});
+
 app.post('/api/auth/forgot-password', async (req, res) => {
   try {
     await connectDB();

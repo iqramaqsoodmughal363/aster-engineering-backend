@@ -67,6 +67,13 @@ const authenticateUser = async (req, res, next) => {
   }
 };
 
+const requireCustomer = (req, res, next) => {
+  if (isAdminEmail(req.user.email) || req.user.role === 'admin') {
+    return res.status(403).json({ message: 'Admins cannot use the customer cart or place customer orders.' });
+  }
+  next();
+};
+
 app.post('/api/register', async (req, res) => {
   try {
     await connectDB();
@@ -147,7 +154,7 @@ const orderSchema = new mongoose.Schema({
 }, { timestamps: true });
 const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
 
-app.get('/api/cart', authenticateUser, async (req, res) => {
+app.get('/api/cart', authenticateUser, requireCustomer, async (req, res) => {
   try {
     await connectDB();
     const cart = await Cart.findOne({ user: req.user._id });
@@ -157,7 +164,7 @@ app.get('/api/cart', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/cart/items', authenticateUser, async (req, res) => {
+app.post('/api/cart/items', authenticateUser, requireCustomer, async (req, res) => {
   try {
     await connectDB();
     const { productId, title, thumbnail, category } = req.body;
@@ -174,7 +181,7 @@ app.post('/api/cart/items', authenticateUser, async (req, res) => {
   }
 });
 
-app.patch('/api/cart/items/:productId', authenticateUser, async (req, res) => {
+app.patch('/api/cart/items/:productId', authenticateUser, requireCustomer, async (req, res) => {
   try {
     await connectDB();
     const quantity = Number(req.body.quantity);
@@ -191,7 +198,7 @@ app.patch('/api/cart/items/:productId', authenticateUser, async (req, res) => {
   }
 });
 
-app.post('/api/orders', authenticateUser, async (req, res) => {
+app.post('/api/orders', authenticateUser, requireCustomer, async (req, res) => {
   try {
     await connectDB();
     const { items, customer } = req.body;
@@ -205,7 +212,7 @@ app.post('/api/orders', authenticateUser, async (req, res) => {
   }
 });
 
-app.get('/api/orders/my', authenticateUser, async (req, res) => {
+app.get('/api/orders/my', authenticateUser, requireCustomer, async (req, res) => {
   try {
     await connectDB();
     res.json(await Order.find({ user: req.user._id }).sort({ createdAt: -1 }));

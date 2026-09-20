@@ -221,6 +221,19 @@ app.get('/api/orders/my', authenticateUser, requireCustomer, async (req, res) =>
   }
 });
 
+app.delete('/api/orders/:orderId', authenticateUser, requireCustomer, async (req, res) => {
+  try {
+    await connectDB();
+    const order = await Order.findOne({ _id: req.params.orderId, user: req.user._id });
+    if (!order) return res.status(404).json({ message: 'Order not found.' });
+    if (order.status !== 'Pending') return res.status(400).json({ message: 'Only pending orders can be cancelled.' });
+    await order.deleteOne();
+    res.json({ message: 'Order cancelled successfully.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to cancel this order.' });
+  }
+});
+
 app.get('/api/orders', authenticateUser, async (req, res) => {
   try {
     await connectDB();
@@ -228,6 +241,20 @@ app.get('/api/orders', authenticateUser, async (req, res) => {
     res.json(await Order.find().populate('user', 'name email').sort({ createdAt: -1 }));
   } catch (error) {
     res.status(500).json({ message: 'Unable to load orders.' });
+  }
+});
+
+app.patch('/api/orders/:orderId/status', authenticateUser, async (req, res) => {
+  try {
+    await connectDB();
+    if (!isAdminEmail(req.user.email) && req.user.role !== 'admin') return res.status(403).json({ message: 'Admin access is required.' });
+    const allowedStatuses = ['Pending', 'Confirmed', 'In Progress', 'Completed'];
+    if (!allowedStatuses.includes(req.body.status)) return res.status(400).json({ message: 'Invalid order status.' });
+    const order = await Order.findByIdAndUpdate(req.params.orderId, { status: req.body.status }, { new: true }).populate('user', 'name email');
+    if (!order) return res.status(404).json({ message: 'Order not found.' });
+    res.json({ message: 'Order status updated successfully.', order });
+  } catch (error) {
+    res.status(500).json({ message: 'Unable to update order status.' });
   }
 });
 
